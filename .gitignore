@@ -1,0 +1,21 @@
+# Build artifacts
+obj_dir/
+obj_dir_*/
+synth_report/
+*.vcd
+*.fst
+*.log
+
+# Test outputs
+test_*.log
+test.log
+
+# Owner-only runbook (NEVER commit)
+LAUNCH.md
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/

@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Cross-toolchain synthesis report. Runs every installed FPGA toolchain
+# against the AEAD top (rtl/chacha20_poly1305_aead.sv plus its sub-modules)
+# and writes SYNTH_REPORT.md with a side-by-side LUT/FF/BRAM table.
+#
+# Toolchains attempted:
+#   * Yosys synth_ice40   (always run, only requires yosys)
+#   * Yosys synth_ecp5    (")
+#   * Yosys synth_xilinx  (Xilinx generic)
+#   * Vivado xc7a35tcsg324-1   (only if `vivado` is on PATH)
+#   * Quartus Cyclone V        (only if `quartus_sh` is on PATH)
+#
+# Missing toolchains are noted as "(skipped: tool not on PATH)".
+
+set -u
+cd "$(dirname "$0")/.."
+
+OUTDIR="synth_report"
+mkdir -p "$OUTDIR"
+
+REPORT="SYNTH_REPORT.md"
+RTL="rtl/chacha20_qround.sv rtl/chacha20_block.sv rtl/chacha20_core.sv rtl/poly1305_core.sv rtl/chacha20_poly1305_aead.sv"
+TOP="chacha20_poly1305_aead"
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+yosys_run() {
+    local target="$1" yopts="$2" outfile="$3"
+    if ! have yosys; then
+        echo "yosys not installed" > "$outfile"
+        return 1
+    fi
+    # We avoid post-synth `flatten` because the 130x128 Poly1305 multiplier
+    # produces ~100k cells after synth_ice40 and the subsequent AUTONAME
+    # pass is very slow / memory-hungry. Instead we report per-module stats
+    # below; the extractor sums LUT/FF cells across the top + sub-module
+    # blocks emitted by Yosys's default `stat` output.
+    yosys -p "read_verilog -sv $RTL; hierarchy -top $TOP; $yopts; stat" \
+          > "$outfile" 2>&1
+    return $?
+}
+
+extract_yosys_stat() {
+    local f="$1"
+    if [[ ! -s "$f" ]] || grep -q "yosys not installed" "$f"; then
+        echo "(skipped)"
+        return
+    fi
+
+    # Find the LAST "Printing statistics" stat block — that is the one
+    # produced after synthesis. From there, sum primitive counts across
+    # all per-module sub-blocks (Yosys emits one `=== module ===` per
+    # leaf module). We grab everything from the last "Printing statistics."
+    # marker to the end of the file.
+    local block
+    block=$(awk '
+        /Printing statistics/ { mark = NR }
+        { lines[NR] = $0 }
+        END {
+            for (i = mark; i <= NR; i++) print lines[i]
+        }
+    ' "$f")
+    if [[ -z "$block" ]]; then
+        echo "(no stat block)"
+        return
+    fi
+
+    local luts ffs brams
+    luts=$(echo "$block" | awk '
+        /SB_LUT4|LUT4|LUT5|LUT6|LUT2|LUT1|^[[:space:]]+LUT[[:space:]]/ { sum += $NF }
+        END { print sum+0 }')
+    ffs=$(echo "$block" | awk '
+        /SB_DFF|SB_DFFESR|SB_DFFE|TRELLIS_FF|FDRE|FDCE|FDPE|FDSE|FDC|FDP/ { sum += $NF }
+        END { print sum+0 }')
+    brams=$(echo "$block" | awk '
+        /SB_RAM40_4K|EBR|RAMB18|RAMB36/ { sum += $NF }
+        END { print sum+0 }')
+    echo "${luts} LUT / ${ffs} FF / ${brams} BRAM"
+}
+
+echo "[synth_report] Yosys ice40..."
+yosys_run "ice40"  "synth_ice40 -top $TOP"             "$OUTDIR/yosys_ice40.log"  || true
+echo "[synth_report] Yosys ecp5..."
+yosys_run "ecp5"   "synth_ecp5 -top $TOP -abc9"        "$OUTDIR/yosys_ecp5.log"   || true
+echo "[synth_report] Yosys xilinx..."
+yosys_run "xilinx" "synth_xilinx -top $TOP"            "$OUTDIR/yosys_xilinx.log" || true
+
+VIVADO_RESULT="(skipped: vivado not on PATH)"
+if have vivado; then
+    echo "[synth_report] Vivado synth_design Artix-7..."
+    cat > "$OUTDIR/vivado_synth.tcl" <<EOF
+set_part xc7a35tcsg324-1
+read_verilog -sv {$RTL}
+synth_design -top $TOP -part xc7a35tcsg324-1 -mode out_of_context
+report_utilization -file $OUTDIR/vivado_util.rpt
+EOF
+    if vivado -mode batch -nojournal -nolog -source "$OUTDIR/vivado_synth.tcl" \
+              > "$OUTDIR/vivado.log" 2>&1; then
+        VIVADO_LUTS=$(awk '/Slice LUTs/ {print $4; exit}' "$OUTDIR/vivado_util.rpt" 2>/dev/null || echo "?")
+        VIVADO_FFS=$(awk  '/Slice Registers/ {print $4; exit}' "$OUTDIR/vivado_util.rpt" 2>/dev/null || echo "?")
+        VIVADO_BRAM=$(awk '/Block RAM Tile/ {print $5; exit}' "$OUTDIR/vivado_util.rpt" 2>/dev/null || echo "0")
+        VIVADO_RESULT="${VIVADO_LUTS} LUT / ${VIVADO_FFS} FF / ${VIVADO_BRAM} BRAM"
+    else
+        VIVADO_RESULT="(failed - see $OUTDIR/vivado.log)"
+    fi
+fi
+
+QUARTUS_RESULT="(skipped: quartus_sh not on PATH)"
+if have quartus_sh; then
+    echo "[synth_report] Quartus Cyclone V..."
+    QPROJ="$OUTDIR/qproj"
+    mkdir -p "$QPROJ"
+    cat > "$QPROJ/${TOP}.qsf" <<EOF
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEMA5F31C6
+set_global_assignment -name TOP_LEVEL_ENTITY $TOP
+set_global_assignment -name SEARCH_PATH ../../rtl
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/chacha20_qround.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/chacha20_block.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/chacha20_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/poly1305_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE ../../rtl/chacha20_poly1305_aead.sv
+EOF
+    cat > "$QPROJ/${TOP}.qpf" <<EOF
+PROJECT_REVISION = "$TOP"
+EOF
+    if (cd "$QPROJ" && quartus_sh --flow compile $TOP > ../quartus.log 2>&1); then
+        QU_LUTS=$(awk -F\| '/ALMs needed/ {gsub(/ /,"",$3); print $3; exit}' "$OUTDIR/quartus.log" || echo "?")
+        QU_FFS=$(awk  -F\| '/Total registers/ {gsub(/ /,"",$3); print $3; exit}' "$OUTDIR/quartus.log" || echo "?")
+        QUARTUS_RESULT="${QU_LUTS} ALM / ${QU_FFS} FF"
+    else
+        QUARTUS_RESULT="(failed - see $OUTDIR/quartus.log)"
+    fi
+fi
+
+ICE40_RESULT=$(extract_yosys_stat "$OUTDIR/yosys_ice40.log")
+ECP5_RESULT=$(extract_yosys_stat "$OUTDIR/yosys_ecp5.log")
+XIL_RESULT=$(extract_yosys_stat   "$OUTDIR/yosys_xilinx.log")
+
+cat > "$REPORT" <<EOF
+# Synthesis comparison report
+
+Generated by \`make synth_report\`. Numbers are post-synthesis, pre-place-and-route.
+Vendor flows (Vivado / Quartus) usually pack tighter than the open-source flow,
+so the Yosys numbers should be read as upper bounds.
+
+| Toolchain                | Target                  | Result                       |
+|--------------------------|-------------------------|------------------------------|
+| Yosys 0.x synth_ice40    | iCE40 UP5K              | ${ICE40_RESULT}              |
+| Yosys 0.x synth_ecp5     | ECP5 LFE5UM-25          | ${ECP5_RESULT}               |
+| Yosys 0.x synth_xilinx   | Xilinx 7-series         | ${XIL_RESULT}                |
+| Vivado synth_design      | Artix-7 xc7a35tcsg324-1 | ${VIVADO_RESULT}             |
+| Quartus Pro              | Cyclone V 5CSEMA5F31C6  | ${QUARTUS_RESULT}            |
+
+## Notes
+
+* The dominant area is the 130x128 Poly1305 multiplier — Yosys-generic
+  synthesis tends to map this to a tree of small LUT4 cells. Vendor
+  flows fold the multiplier into DSP48 (Xilinx) / 18x18 (Lattice ECP5)
+  blocks and the gate count drops sharply. The Yosys numbers therefore
+  read as a worst case; expect Vivado / Diamond to be 2-4x smaller for
+  the same RTL.
+* The state register set is dominated by the 16x32-bit ChaCha20 working
+  state (~512 FF) plus the 130-bit Poly1305 accumulator and the 264-bit
+  product register.
+* iCE40 numbers do not assume \`SB_MAC16\` inference. The Premium tier
+  ships a hand-instantiated mul-accumulate pipeline on iCE40 UP5K that
+  reduces the LUT count significantly.
+* Vivado / Quartus rows are skipped automatically when those tools are
+  not on PATH; on a CI runner with WebPACK / Web Edition installed they
+  will be populated from a real synth_design / quartus_sh run.
+
+## Reproduction
+
+\`\`\`
+make synth_report
+\`\`\`
+
+Raw logs land in \`synth_report/\`.
+EOF
+
+echo "[synth_report] Wrote $REPORT"
