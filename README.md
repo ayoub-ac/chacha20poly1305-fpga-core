@@ -1,20 +1,19 @@
 # chacha20poly1305-fpga-core
 
 [![License: GPL-3.0-or-later or commercial](https://img.shields.io/badge/license-GPL--3.0%20%7C%20commercial-blue.svg)](LICENSE.md)
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](#verification)
-[![RFC 8439 vectors](https://img.shields.io/badge/RFC--8439-vectors%20pass-blue.svg)](#verification)
-[![Lint](https://img.shields.io/badge/Verilator%20lint-clean-brightgreen.svg)](#build--test)
+
+> **Status: experimental and unverified.** This core was written with AI assistance and has not been independently verified in simulation regressions, formal proofs or hardware. Claims in this repository about standards compliance, test results, timing and resource use are unverified. It has not been validated under NIST CAVP/CMVP and has not been evaluated for side-channel or fault-injection resistance. Do not use it in production or security-sensitive designs without your own verification. No support or maintenance is provided.
 
 A small, synthesisable ChaCha20-Poly1305 AEAD IP core in SystemVerilog.
-Implements RFC 8439 / RFC 7539 end-to-end (ChaCha20 stream cipher,
-Poly1305 MAC, AEAD construction with AAD support, constant-time tag
-compare). Targets iCE40, ECP5, Xilinx 7-series, Cyclone V, and Tang
+Implements the RFC 8439 / RFC 7539 algorithm (not validated): ChaCha20
+stream cipher, Poly1305 MAC, AEAD construction with AAD support, and a
+tag compare intended to be constant-time (not evaluated). Targets iCE40, ECP5, Xilinx 7-series, Cyclone V, and Tang
 Nano 9K.
 
-The core is verified end-to-end against RFC 8439 published vectors and
-100 random vectors cross-checked against Python's
-`cryptography.hazmat.primitives.ciphers.aead.ChaCha20Poly1305`. No FPGA
-hardware is required for the test suite.
+RFC 8439 published vectors and 100 random vectors generated with Python's
+`cryptography.hazmat.primitives.ciphers.aead.ChaCha20Poly1305` are included
+in the testbench; results not independently confirmed. No FPGA hardware is required to
+run the test suite.
 
 ## Why this exists
 
@@ -94,13 +93,14 @@ emits the final `(len_aad || len_ct)` block to Poly1305 automatically.
 | `finalize_i`        | in  | 1     | Pulse to finalise (alternative to `data_last_i` for streaming flows).                         | -       |
 | `tag_o`             | out | 128   | 128-bit Poly1305 tag, byte 0 in `tag_o[7:0]`.                                                 | §2.5    |
 | `tag_valid_o`       | out | 1     | Tag is valid and stable.                                                                      | -       |
-| `expected_tag_i`    | in  | 128   | Caller-provided expected tag for constant-time compare.                                       | -       |
-| `tag_match_o`       | out | 1     | Constant-time comparison: `(tag_o == expected_tag_i) && tag_valid_o`.                         | -       |
+| `expected_tag_i`    | in  | 128   | Caller-provided expected tag for the tag compare.                                             | -       |
+| `tag_match_o`       | out | 1     | `(tag_o == expected_tag_i) && tag_valid_o`; intended to be constant-time, not evaluated.      | -       |
 
 ## Headline numbers
 
-Real numbers from `make synth_report` (Yosys 0.x, AEAD top with all
-sub-modules flattened):
+Unverified estimates attributed to `make synth_report` (Yosys 0.x, AEAD
+top with all sub-modules flattened). They have not been independently
+reproduced:
 
 | Target           | LUT       | FF    | BRAM | Latency (114 B msg)   | Notes                  |
 |------------------|-----------|-------|------|-----------------------|------------------------|
@@ -109,8 +109,8 @@ sub-modules flattened):
 | Xilinx Artix-7   | see `SYNTH_REPORT.md` | ~4500 | 0    | ~640 cycles           | Yosys generic mapping  |
 
 The 130x128 Poly1305 multiplier is the dominant area cost. Vendor flows
-(Vivado / Diamond / Quartus) fold this into DSP slices and the gate
-count drops sharply; `synth_xilinx` shown here uses the open generic
+(Vivado / Diamond / Quartus) are expected to fold this into DSP slices and
+reduce the gate count (unverified); `synth_xilinx` shown here uses the open generic
 mapping. See [`RESOURCE_ESTIMATES.md`](RESOURCE_ESTIMATES.md) for the
 full breakdown and reduction options.
 
@@ -126,19 +126,21 @@ make test-poly       # Poly1305 unit tests
 make test-all        # all three suites
 ```
 
-A passing run ends with `+PASS all tests passed` and exits 0.
+The harness is written to end a passing run with `+PASS all tests passed` and
+exit 0. No passing run has been independently confirmed.
 
 ## Verification
 
-Three orthogonal techniques are wired into the testbench.
+Three techniques are wired into the testbench. Test vectors are included;
+results not independently confirmed.
 
 ### Directed tests (5 groups)
 
 | # | Test                                       | Coverage                                             |
 |---|--------------------------------------------|------------------------------------------------------|
 | 1 | RFC 8439 §2.8.2 AEAD vector                | Full AEAD encrypt + tag + tag-match                  |
-| 2 | Tampered expected_tag rejected             | `tag_match_o` constant-time compare                  |
-| 3 | 100 cross-validated random vectors         | `cryptography.hazmat.primitives.ciphers.aead`        |
+| 2 | Tampered expected_tag rejected             | `tag_match_o` compare                                |
+| 3 | 100 random reference vectors               | `cryptography.hazmat.primitives.ciphers.aead`        |
 | 4 | Mode coverage (encrypt / decrypt / AAD-only)| All `mode_i` encodings                              |
 | 5 | 1024-byte multi-block message              | Streaming & length tracking                          |
 
@@ -150,8 +152,8 @@ Plus dedicated unit suites:
 
 ### SystemVerilog assertions
 
-`tb/aead_assertions.sv` enforces protocol invariants on every cycle of
-every test:
+`tb/aead_assertions.sv` is intended to check protocol invariants on every
+cycle of every test:
 
 - `data_ready_o` only rises after `init_i` has been seen.
 - `result_o` is stable while back-pressured (`result_valid_o && !result_ready_i`).
@@ -160,13 +162,13 @@ every test:
   (`finalize_i` pulse OR a `data_last_i` beat).
 - Tag latency bound after finalisation (`< LAT_MAX` cycles).
 
-The assertions compile with both Verilator 5.x (`--assert`) and Vivado
-xsim. They are stripped on synthesis flows via `` `ifndef SYNTHESIS ``.
+The assertions are intended to compile with both Verilator 5.x (`--assert`)
+and Vivado xsim (not independently confirmed). They are stripped on synthesis flows via `` `ifndef SYNTHESIS ``.
 
 ### Functional coverage
 
 `tb/aead_cov.sv` collects 10 bins. The simulator prints a coverage
-summary at end-of-test:
+summary at end-of-test in this format (illustrative output; results not independently confirmed):
 
 ```
 ---- Functional coverage ----
@@ -177,7 +179,7 @@ summary at end-of-test:
 Coverage: 10/10 bins (100.0%)
 ```
 
-A regression that drops below 100% fails the gate.
+The harness is intended to fail a run that drops below 100%.
 
 ### Synthesis comparison report
 
@@ -189,14 +191,14 @@ when not on `$PATH`.
 
 ## Variants
 
-| Variant                             | Use case                                                                       | Tier   |
-|-------------------------------------|--------------------------------------------------------------------------------|--------|
-| `rtl/chacha20_poly1305_aead.sv`     | Default AEAD top: encrypt / decrypt / AAD-only, single clock domain            | GPL    |
-| `rtl/chacha20_core.sv`              | ChaCha20 stream cipher only (no MAC) — for protocols using Poly1305 separately | GPL    |
-| `rtl/poly1305_core.sv`              | Poly1305 MAC only (no cipher) — for raw MAC use cases                          | GPL    |
-| `vhdl_wrapper/chacha20_poly1305_vhdl.vhd` | VHDL-2008 entity wrapping the SV core for VHDL-only designs              | All    |
+| Variant                             | Use case                                                                       |
+|-------------------------------------|--------------------------------------------------------------------------------|
+| `rtl/chacha20_poly1305_aead.sv`     | Default AEAD top: encrypt / decrypt / AAD-only, single clock domain            |
+| `rtl/chacha20_core.sv`              | ChaCha20 stream cipher only (no MAC) — for protocols using Poly1305 separately |
+| `rtl/poly1305_core.sv`              | Poly1305 MAC only (no cipher) — for raw MAC use cases                          |
+| `vhdl_wrapper/chacha20_poly1305_vhdl.vhd` | VHDL-2008 entity wrapping the SV core for VHDL-only designs              |
 
-Premium tier (on roadmap, not yet shipped):
+Roadmap (not implemented):
 * DSP-aware Poly1305 multiplier (Xilinx DSP48 / Lattice 18x18 instantiation).
 * Side-channel hardening (masked ChaCha20 + masked Poly1305).
 * XChaCha20-Poly1305 (192-bit nonce variant).
@@ -208,8 +210,8 @@ Dual-licensed:
 - **GPL-3.0-or-later** for open-source projects. If your product links
   this RTL or its compiled bitstream, your project must also be
   GPL-3.0+.
-- **Commercial license** for closed-source products. See
-  [`LICENSE.md`](LICENSE.md) for the legal text and an FAQ.
+- **Commercial license** for closed-source products. Commercial licenses are available on request: open a GitHub issue titled 'Commercial license request'. Do not post confidential details in the issue. Any commercial license is provided as is, without warranty, support or maintenance. This core is unverified (see README).
+  See [`LICENSE.md`](LICENSE.md) for the license text.
 
 If unsure which applies, read `LICENSE.md` or open an issue.
 
@@ -244,7 +246,8 @@ Bug reports and patches welcome. Process:
 1. File an issue first for non-trivial changes.
 2. Fork, branch, and run `make lint test-all` locally.
 3. Open a pull request with a description of what changed and why.
-4. CI runs the full test suite plus `synth_report`; both must be green.
+4. There is no CI; include the output of your local `make lint test-all`
+   run in the pull request.
 
 ## Citation
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later OR Commercial
+// SPDX-License-Identifier: GPL-3.0-or-later OR LicenseRef-Commercial
 //
 // ChaCha20 streaming core. Wraps chacha20_block to encrypt / decrypt a
 // stream of 64-byte blocks. Encryption and decryption are identical (XOR

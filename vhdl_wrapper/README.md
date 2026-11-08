@@ -9,11 +9,11 @@ SystemVerilog directly.
 
 **Wrapper only.** The AEAD datapath (ChaCha20 quarter rounds, Poly1305
 multiply, the AEAD FSM) lives in `rtl/*.sv` and is instantiated as a
-SystemVerilog black-box. Mixed-language elaboration is supported by every
-commercial simulator and synthesiser the core has been tested against.
+SystemVerilog black-box, so the toolchain must support mixed-language
+elaboration. The wrapper has not been tested with any simulator or
+synthesiser.
 
-A pure VHDL re-implementation of the core is on the roadmap (Premium
-tier). Until then, treat this directory as a binding layer, not as a
+A pure VHDL re-implementation of the core is on the roadmap. Until then, treat this directory as a binding layer, not as a
 second implementation.
 
 ## Usage
@@ -99,8 +99,9 @@ end architecture;
 
 ## What this wrapper does NOT change
 
-* Latency, throughput, area: identical to `chacha20_poly1305_aead.sv`.
-  There is no additional pipeline stage.
+* Latency, throughput, area: intended to be identical to
+  `chacha20_poly1305_aead.sv` (unverified). There is no additional
+  pipeline stage.
 * Endianness: byte 0 of every wide bus is the LSB of the corresponding
   word, matching the on-the-wire RFC 8439 byte order.
 * Reset polarity: still active-low synchronous (`rst_ni`).

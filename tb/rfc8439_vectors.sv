@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later OR Commercial
+// SPDX-License-Identifier: GPL-3.0-or-later OR LicenseRef-Commercial
 //
 // RFC 8439 test vectors as SystemVerilog package constants. Mirrored from
 // the relevant sections so non-Verilator simulators (Vivado xsim, Questa)

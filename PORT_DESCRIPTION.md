@@ -112,13 +112,14 @@ tag_o               _____________________________|tag |‾‾‾‾‾‾‾‾�
 `tag_valid_o` stays high until the next `init_i`. `tag_o` is stable
 across this entire window.
 
-## Constant-time tag compare
+## Tag compare (intended to be constant-time; not evaluated)
 
 For the decrypt path, the caller drives `expected_tag_i` with the tag
 received over the wire. The core combinationally computes
 `tag_match_o = tag_valid_o && (tag_o ^ expected_tag_i == 0)`. There is
 no early-exit; the full 128-bit XOR-OR-zero is always evaluated, so
-`tag_match_o` does not leak partial-match information.
+`tag_match_o` is intended not to leak partial-match information (not
+evaluated).
 
 For the encrypt path, leave `expected_tag_i = 0` (or any value); the
 caller will use `tag_o` directly.
@@ -127,15 +128,14 @@ caller will use `tag_o` directly.
 
 `mode_i` is a status bit recorded for the integrator's benefit. The
 hardware operations are identical for all three modes (ChaCha20 stream
-XOR, Poly1305 absorb), but the value is exposed via debug ports and
-the coverage collector.
+XOR, Poly1305 absorb); the value is used by the coverage collector.
 
 | Encoding | Mode      | Use                                    |
 |----------|-----------|----------------------------------------|
 | `2'b00`  | ENCRYPT   | Caller feeds plaintext, gets ciphertext + tag |
 | `2'b01`  | DECRYPT   | Caller feeds ciphertext, gets plaintext + tag, then verifies via `expected_tag_i` |
 | `2'b10`  | AAD_ONLY  | Caller feeds AAD only, no ct/pt; tag authenticates AAD alone (rare) |
-| `2'b11`  | reserved  | Reserved for future modes (e.g., XChaCha20-Poly1305 in Premium tier). Treated as ENCRYPT for now. |
+| `2'b11`  | reserved  | Reserved for future modes (e.g., XChaCha20-Poly1305, not implemented). Treated as ENCRYPT for now. |
 
 ## Endianness
 
@@ -153,7 +153,8 @@ by reference implementations in libsodium / OpenSSL / WireGuard.
 
 ## Latency summary
 
-For a message with `A` bytes of AAD and `P` bytes of plaintext:
+For a message with `A` bytes of AAD and `P` bytes of plaintext (design
+intent; unverified estimates):
 
 | Phase                         | Cycles                              |
 |-------------------------------|-------------------------------------|
@@ -167,4 +168,5 @@ For a message with `A` bytes of AAD and `P` bytes of plaintext:
 | Total (rough)                 | `~95 + ceil(A/16)*5 + ceil(P/64)*105` |
 
 For a typical TLS 1.3 record with ~16 bytes AAD and ~16 KB plaintext,
-this is about 27 000 cycles, i.e. ~270 µs at 100 MHz.
+this is about 27 000 cycles, i.e. ~270 µs at 100 MHz (unverified
+estimate).

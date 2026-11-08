@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later OR Commercial
+// SPDX-License-Identifier: GPL-3.0-or-later OR LicenseRef-Commercial
 //
 // Top-level testbench wrapper for chacha20_core (streaming).
 // Stimulus is driven from tb/sim_main_chacha.cpp.

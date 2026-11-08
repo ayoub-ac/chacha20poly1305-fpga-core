@@ -1,4 +1,4 @@
--- SPDX-License-Identifier: GPL-3.0-or-later OR Commercial
+-- SPDX-License-Identifier: GPL-3.0-or-later OR LicenseRef-Commercial
 --
 -- VHDL-2008 wrapper for the SystemVerilog chacha20_poly1305_aead module.
 --
